@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -15,10 +15,6 @@ export const accounts = pgTable("accounts", {
   client_id: text("client_id").notNull(),
   client_secret: text("client_secret").notNull(),
   refresh_token: text("refresh_token").notNull(),
-  // NEW: Flag for Bigin
-  supports_bigin: boolean("supports_bigin").default(false),
-  // NEW: Flag for CRM (Default true for backward compatibility)
-  supports_crm: boolean("supports_crm").default(true),
 });
 
 export const insertUserSchema = createInsertSchema(users).pick({

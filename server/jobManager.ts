@@ -3,35 +3,62 @@ import axios from "axios";
 import { log } from "./vite";
 
 const ZOHO_ACCOUNTS_URL = 'https://accounts.zoho.com';
-
-// --- GLOBAL STORAGE (Prevents data loss on reload) ---
-declare global {
-  var jobStorage: Map<string, any>;
-}
-
-if (!global.jobStorage) {
-  global.jobStorage = new Map();
-}
+const accessTokenCache: Record<string, { token: string; expires_at: number }> = {};
+const tokenRefreshLocks: Record<string, Promise<string>> = {};
 
 async function getAccessToken(account: any): Promise<string> {
-  // (Simplified for brevity, standard token fetch logic)
   const { refresh_token, client_id, client_secret, id } = account;
-  try {
-    const response = await axios.post(`${ZOHO_ACCOUNTS_URL}/oauth/v2/token`, null, {
-      params: { refresh_token, client_id, client_secret, grant_type: 'refresh_token' }
-    });
-    return response.data.access_token;
-  } catch (error: any) {
-    log(`Auth Error ${id}: ${error.message}`, 'auth-error');
-    throw new Error('Auth Failed');
+  
+  const cachedToken = accessTokenCache[id];
+  if (cachedToken && cachedToken.expires_at > Date.now()) {
+    return cachedToken.token;
   }
+
+  if (tokenRefreshLocks[id]) {
+    return await tokenRefreshLocks[id];
+  }
+
+  const refreshPromise = (async () => {
+    try {
+      const response = await axios.post(`${ZOHO_ACCOUNTS_URL}/oauth/v2/token`, null, {
+        params: { refresh_token, client_id, client_secret, grant_type: 'refresh_token' }
+      });
+      const newAccessToken = response.data.access_token;
+      const expiresInMs = response.data.expires_in * 1000;
+      accessTokenCache[id] = {
+        token: newAccessToken,
+        expires_at: Date.now() + expiresInMs - 60000
+      };
+      return newAccessToken;
+    } catch (error: any) {
+      log(`Failed to get access token for account ${id}: ${error.message}`, 'auth-error');
+      throw new Error('Invalid refresh token or other Zoho API error.');
+    } finally {
+      delete tokenRefreshLocks[id];
+    }
+  })();
+
+  tokenRefreshLocks[id] = refreshPromise;
+  return await refreshPromise;
+}
+
+
+interface Job {
+  accountId: string;
+  emails: string[];
+  results: any[];
+  status: 'processing' | 'paused' | 'stopped' | 'completed' | 'failed';
+  currentIndex: number;
+  totalEmails: number;
+  delay: number;
+  formData: any;
+  error?: string;
+  countdown: number;
 }
 
 class JobManager {
   private static instance: JobManager;
-  // Use the global storage instead of a private property
-  private get jobs() { return global.jobStorage; }
-  
+  private jobs: Map<string, Job> = new Map();
   private timers: Map<string, NodeJS.Timeout> = new Map();
   private countdownIntervals: Map<string, NodeJS.Timeout> = new Map();
 
@@ -44,14 +71,13 @@ class JobManager {
     return JobManager.instance;
   }
 
-  public startJob(accountId: string | number, emails: string[], delay: number, formData: any, platform: 'crm' | 'bigin' = 'crm') {
-    const id = String(accountId);
-    
-    // Reset if exists
-    this.clearTimers(id);
+  public startJob(accountId: string, emails: string[], delay: number, formData: any) {
+    if (this.jobs.has(accountId) && this.jobs.get(accountId)?.status === 'processing') {
+      return;
+    }
 
-    const newJob = {
-      accountId: id,
+    const newJob: Job = {
+      accountId,
       emails,
       results: [],
       status: 'processing',
@@ -59,53 +85,54 @@ class JobManager {
       totalEmails: emails.length,
       delay,
       formData,
-      platform,
       countdown: 0,
     };
-    
-    this.jobs.set(id, newJob);
-    log(`Job STARTED for ${id} (${emails.length} emails)`, 'job-manager');
-    this.processEmail(id);
+    this.jobs.set(accountId, newJob);
+    this.processEmail(accountId);
   }
 
-  public stopJob(accountId: string | number) {
-    const id = String(accountId);
-    this.clearTimers(id);
-    if (this.jobs.has(id)) {
-      const job = this.jobs.get(id);
+  public stopJob(accountId: string) {
+    this.clearTimers(accountId);
+    if (this.jobs.has(accountId)) {
+      const job = this.jobs.get(accountId)!;
       job.status = 'stopped';
-      this.jobs.set(id, job);
+      this.jobs.set(accountId, job);
     }
   }
 
-  public pauseJob(accountId: string | number) {
-    const id = String(accountId);
-    this.clearTimers(id);
-    if (this.jobs.has(id)) {
-      const job = this.jobs.get(id);
+  public pauseJob(accountId: string) {
+    this.clearTimers(accountId);
+    if (this.jobs.has(accountId)) {
+      const job = this.jobs.get(accountId)!;
       if (job.status === 'processing') {
         job.status = 'paused';
-        this.jobs.set(id, job);
+        this.jobs.set(accountId, job);
       }
     }
   }
 
-  public resumeJob(accountId: string | number) {
-    const id = String(accountId);
-    if (this.jobs.has(id)) {
-      const job = this.jobs.get(id);
+  public resumeJob(accountId: string) {
+    if (this.jobs.has(accountId)) {
+      const job = this.jobs.get(accountId)!;
       if (job.status === 'paused') {
         job.status = 'processing';
-        this.jobs.set(id, job);
-        this.scheduleNext(id);
+        this.jobs.set(accountId, job);
+        this.scheduleNext(accountId);
       }
     }
   }
 
   public getStatus() {
     const statusReport: any = {};
-    this.jobs.forEach((job, id) => {
-      statusReport[id] = job;
+    this.jobs.forEach((job, accountId) => {
+      statusReport[accountId] = {
+        status: job.status,
+        processed: job.currentIndex,
+        total: job.totalEmails,
+        results: job.results,
+        error: job.error,
+        countdown: job.countdown,
+      };
     });
     return statusReport;
   }
@@ -121,6 +148,7 @@ class JobManager {
     }
   }
 
+
   private scheduleNext(accountId: string) {
     const job = this.jobs.get(accountId);
     if (!job || job.status !== 'processing') return;
@@ -129,7 +157,7 @@ class JobManager {
       job.status = 'completed';
       this.jobs.set(accountId, job);
       this.clearTimers(accountId);
-      log(`Job COMPLETED for ${accountId}`, 'job-manager');
+      log(`Job for account ${accountId} completed.`, 'job-manager');
       return;
     }
 
@@ -154,104 +182,145 @@ class JobManager {
     if (!job || job.status !== 'processing') return;
 
     const email = job.emails[job.currentIndex];
-    const { formData, platform } = job;
+    const { formData } = job;
     
-    // Correct API Selection
-    const baseUrl = platform === 'bigin' 
-      ? 'https://www.zohoapis.com/bigin/v2' 
-      : 'https://www.zohoapis.com/crm/v2';
-
-    let contactStatus = 'Failed';
-    let emailStatus = 'Skipped';
-    let contactResponse: any = {};
-    let emailResponse: any = {};
+    let contactStatus: 'Success' | 'Failed' = 'Failed';
+    let emailStatus: 'Success' | 'Failed' | 'Skipped' = 'Skipped';
+    let contactResponsePayload: any = {};
+    let emailResponsePayload: any = {};
     let contactId: string | null = null;
 
     try {
       const account = await storage.getAccount(parseInt(accountId));
-      if (!account) throw new Error("Account DB Record Not Found");
+      if (!account) throw new Error(`Account ${accountId} not found.`);
       
       const accessToken = await getAccessToken(account);
       const fromAddress = formData.fromAddresses.find((addr:any) => addr.email === formData.fromEmail);
+      if (formData.sendEmail && !fromAddress) throw new Error("From address not found");
 
-      // 1. Create Contact
+      // --- Step 1: Create or Find Contact ---
       try {
-        const contactPayload = { Last_Name: formData.lastName, Email: email, ...formData.customFields };
-        const res = await axios.post(`${baseUrl}/Contacts`, { data: [contactPayload] }, {
+        const contactPayload = {
+          Last_Name: formData.lastName,
+          Email: email,
+          ...formData.customFields 
+        };
+
+        const contactData = { data: [contactPayload] };
+        const contactResponse = await axios.post('https://www.zohoapis.com/crm/v2/Contacts', contactData, {
           headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
         });
-        contactResponse = res.data;
-        const details = res.data.data?.[0];
-        if (details?.status === 'success' || details?.code === 'DUPLICATE_DATA') {
+        contactResponsePayload = contactResponse.data;
+
+        if (contactResponse.data.data[0].status === 'success') {
             contactStatus = 'Success';
-            contactId = details.details.id;
+            contactId = contactResponse.data.data[0].details.id;
+        } else if (contactResponse.data.data[0].code === 'DUPLICATE_DATA') {
+            contactStatus = 'Success';
+            contactId = contactResponse.data.data[0].details.id;
         }
-      } catch(e: any) {
-         contactResponse = e.response?.data || { error: e.message };
+
+      } catch(contactError: any) {
+         contactResponsePayload = contactError.response ? contactError.response.data : { message: contactError.message };
       }
 
-      // 2. Send Email
-      if (contactId && formData.sendEmail && fromAddress) {
+      // --- Step 2: Send Email if Contact Exists and sendEmail is true ---
+      if (contactId && formData.sendEmail) {
         try {
-            const emailData = { 
-                data: [{ 
-                    from: { user_name: fromAddress.user_name, email: fromAddress.email }, 
-                    to: [{ user_name: formData.lastName, email }], 
-                    subject: formData.subject, 
-                    content: formData.content 
-                }] 
-            };
-            const res = await axios.post(`${baseUrl}/Contacts/${contactId}/actions/send_mail`, emailData, {
-              headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+            const emailData = { data: [{ from: { user_name: fromAddress.user_name, email: fromAddress.email }, to: [{ user_name: formData.lastName, email }], subject: formData.subject, content: formData.content, mail_format: "html" }] };
+            const emailResponse = await axios.post(`https://www.zohoapis.com/crm/v2/Contacts/${contactId}/actions/send_mail`, emailData, {
+              headers: {
+                'Authorization': `Zoho-oauthtoken ${accessToken}`,
+                'Content-Type': 'application/json'
+              }
             });
-            emailResponse = res.data;
-            if (res.data.data?.[0]?.status === 'success') emailStatus = 'Success';
-            else emailStatus = 'Failed';
-        } catch(e: any) {
+            emailResponsePayload = emailResponse.data;
+            if (emailResponse.data.data[0].status === 'success') {
+                emailStatus = 'Success';
+            } else {
+                emailStatus = 'Failed';
+            }
+        } catch(emailError: any) {
             emailStatus = 'Failed';
-            emailResponse = e.response?.data || { error: e.message };
+            emailResponsePayload = emailError.response ? emailError.response.data : { message: emailError.message };
         }
+      } else if (!formData.sendEmail) {
+        emailStatus = 'Skipped';
+        emailResponsePayload = { message: "Email sending was skipped by user." };
+      } else {
+        emailStatus = 'Failed';
+        emailResponsePayload = { message: "Email not sent because contact creation failed." };
       }
 
     } catch (criticalError: any) {
-      log(`Critical Error ${accountId}: ${criticalError.message}`, 'job-error');
-      contactResponse = { fatal_error: criticalError.message };
+      log(`Critical error in job for account ${accountId}: ${criticalError.message}`, 'job-manager-error');
+      job.status = 'failed';
+      job.error = criticalError.message;
+      contactResponsePayload = { message: criticalError.message };
+      emailResponsePayload = { message: criticalError.message };
     } finally {
-      const resultItem = { 
-          email, contactStatus, emailStatus, 
-          liveStatus: formData.checkStatus ? 'Pending' : 'Skipped',
-          response: { contact: contactResponse, email: emailResponse },
-          isDuplicate: contactResponse?.data?.[0]?.code === 'DUPLICATE_DATA'
-      };
+      // Determine initial status. If check is disabled, set to Skipped immediately so UI doesn't wait.
+      const initialLiveStatus = formData.checkStatus ? 'Pending' : 'Skipped';
       
+      const resultItem: any = { 
+          email, 
+          contactStatus, 
+          emailStatus, 
+          liveStatus: initialLiveStatus,
+          response: { contact: contactResponsePayload, email: emailResponsePayload, live: null } 
+      };
       job.results.push(resultItem);
       
-      // Background Check
+      // --- BACKGROUND STATUS CHECK ---
       if (formData.checkStatus && contactId) {
-          this.runBackgroundCheck(accountId, contactId, resultItem, baseUrl);
+          (async (idToMonitor, itemToUpdate) => {
+            try {
+              // Wait 3 seconds
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              
+              const account = await storage.getAccount(parseInt(accountId));
+              if (!account) return;
+              const token = await getAccessToken(account);
+
+              const response = await axios.get(`https://www.zohoapis.com/crm/v2/Contacts/${idToMonitor}/Emails`, {
+                headers: { 'Authorization': `Zoho-oauthtoken ${token}` }
+              });
+              
+              // SAVE THE RESPONSE DATA
+              itemToUpdate.response.live = response.data;
+
+              const emails = response.data.email_related_list;
+              if (emails && emails.length > 0) {
+                const latestEmail = emails[0];
+                if (latestEmail.status && latestEmail.status.length > 0) {
+                    const statusType = latestEmail.status[0].type;
+                    
+                    // Normalize status types
+                    if (statusType === 'sent') {
+                        itemToUpdate.liveStatus = "Sent";
+                    } else if (statusType === 'bounced') {
+                         itemToUpdate.liveStatus = "Bounced";
+                    } else {
+                        itemToUpdate.liveStatus = statusType;
+                    }
+                } else {
+                    itemToUpdate.liveStatus = "No Status";
+                }
+              } else {
+                 itemToUpdate.liveStatus = "Not Found";
+              }
+            } catch (err: any) {
+              console.log(`Background check failed for ${idToMonitor}`, err);
+              itemToUpdate.liveStatus = "Failed Check";
+              itemToUpdate.response.live = { error: err.message };
+            }
+          })(contactId, resultItem);
       }
 
       job.currentIndex++;
       this.jobs.set(accountId, job);
       this.scheduleNext(accountId);
     }
-  }
-
-  private async runBackgroundCheck(accountId: string, contactId: string, item: any, baseUrl: string) {
-      setTimeout(async () => {
-        try {
-            const account = await storage.getAccount(parseInt(accountId));
-            const token = await getAccessToken(account);
-            const res = await axios.get(`${baseUrl}/Contacts/${contactId}/Emails`, {
-                headers: { 'Authorization': `Zoho-oauthtoken ${token}` }
-            });
-            item.response.live = res.data;
-            const status = res.data.email_related_list?.[0]?.status?.[0]?.type;
-            item.liveStatus = status === 'sent' ? 'Sent' : status === 'bounced' ? 'Bounced' : (status || 'No Status');
-        } catch (e) {
-            item.liveStatus = 'Check Failed';
-        }
-      }, 4000);
   }
 }
 

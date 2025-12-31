@@ -14,9 +14,6 @@ import BulkContacts from "@/pages/bulk-contacts";
 import EmailTemplates from "@/pages/email-templates";
 import WorkflowReport from "@/pages/workflow-report";
 import NotFound from "@/pages/not-found";
-// Import Bigin Pages
-import BiginTest from "@/pages/bigin-test";
-import BulkContactsBigin from "@/pages/bulk-contacts-bigin";
 
 function Router() {
   return (
@@ -34,11 +31,6 @@ function Router() {
             <Route path="/bulk-contacts" component={BulkContacts} />
             <Route path="/email-templates" component={EmailTemplates} />
             <Route path="/workflow-report" component={WorkflowReport} />
-            
-            {/* Bigin Routes */}
-            <Route path="/bigin-test" component={BiginTest} />
-            <Route path="/bulk-contacts-bigin" component={BulkContactsBigin} />
-            
             <Route component={NotFound} />
           </Switch>
         </main>

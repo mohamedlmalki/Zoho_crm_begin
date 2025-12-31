@@ -24,12 +24,6 @@ export default function BulkContacts() {
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [allFormsData, setAllFormsData] = useState(bulkContactsState.getState());
 
-  // --- SMART CRM SELECTOR LOGIC ---
-  // Only show accounts where supports_crm is TRUE or UNDEFINED (for backward compatibility)
-  const validAccounts = useMemo(() => {
-    return accounts.filter((acc: any) => acc.supports_crm !== false);
-  }, [accounts]);
-
   // User Selection State
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [userFirstName, setUserFirstName] = useState<string>("");
@@ -104,12 +98,11 @@ export default function BulkContacts() {
 
   const currentJob = useMemo(() => jobStatuses[selectedAccountId] || null, [jobStatuses, selectedAccountId]);
   
-  // Updated Auto-Select to use validAccounts
   useEffect(() => {
-    if (validAccounts.length > 0 && !selectedAccountId) {
-      setSelectedAccountId(validAccounts[0].id.toString());
+    if (accounts.length > 0 && !selectedAccountId) {
+      setSelectedAccountId(accounts[0].id.toString());
     }
-  }, [validAccounts, selectedAccountId]);
+  }, [accounts, selectedAccountId]);
   
   useEffect(() => {
     if (fromAddresses.length > 0 && selectedAccountId) {
@@ -342,7 +335,7 @@ export default function BulkContacts() {
       {/* Settings & User Manager Card with Header Stats */}
       <div className="form-card">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b pb-4">
-            <h3 className="text-lg font-semibold text-foreground">Settings & User Manager (CRM)</h3>
+            <h3 className="text-lg font-semibold text-foreground">Settings & User Manager</h3>
             
             {/* Stats Counter - Moved to Header */}
             {selectedAccountId && (
@@ -370,9 +363,9 @@ export default function BulkContacts() {
                 <div className="flex-1 w-full">
                     <Label htmlFor="single-account-select" className="mb-2 block">Select Account</Label>
                     <Select value={selectedAccountId} onValueChange={handleAccountChange}>
-                        <SelectTrigger><SelectValue placeholder={validAccounts.length === 0 ? "No CRM Account Found" : "Choose account"} /></SelectTrigger>
+                        <SelectTrigger><SelectValue placeholder="Choose account" /></SelectTrigger>
                         <SelectContent>
-                            {validAccounts.map((account) => (<SelectItem key={account.id} value={account.id.toString()}>{account.name}</SelectItem>))}
+                            {accounts.map((account) => (<SelectItem key={account.id} value={account.id.toString()}>{account.name}</SelectItem>))}
                         </SelectContent>
                     </Select>
                 </div>
