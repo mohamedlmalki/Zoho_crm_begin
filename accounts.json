@@ -166,5 +166,14 @@
     "client_secret": "7af9ca092d4986822358aabf1400ab9d72e1bb0e9b",
     "refresh_token": "1000.a8366bf659294a3641b01d651e6b15a6.a44a3a8c0f3eb98f708188f045f73a40",
     "id": 1764735184019
+  },
+  {
+    "name": "begin 1",
+    "client_id": "1000.9F6549LLL319OQUDII5L1WQXW6RH8E",
+    "client_secret": "60cf1026efca158488bac2f4d51d024fd37e3eaf3c",
+    "refresh_token": "1000.3142b78c9380e92619d0595799170134.87d85eeffa7da414b76fc7569b8808b9",
+    "supports_crm": false,
+    "supports_bigin": true,
+    "id": 1767137937268
   }
 ]

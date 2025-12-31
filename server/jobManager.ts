@@ -42,7 +42,6 @@ async function getAccessToken(account: any): Promise<string> {
   return await refreshPromise;
 }
 
-
 interface Job {
   accountId: string;
   emails: string[];
@@ -52,6 +51,7 @@ interface Job {
   totalEmails: number;
   delay: number;
   formData: any;
+  platform: 'crm' | 'bigin'; // <--- NEW FIELD
   error?: string;
   countdown: number;
 }
@@ -71,7 +71,8 @@ class JobManager {
     return JobManager.instance;
   }
 
-  public startJob(accountId: string, emails: string[], delay: number, formData: any) {
+  // Updated to accept platform
+  public startJob(accountId: string, emails: string[], delay: number, formData: any, platform: 'crm' | 'bigin' = 'crm') {
     if (this.jobs.has(accountId) && this.jobs.get(accountId)?.status === 'processing') {
       return;
     }
@@ -85,6 +86,7 @@ class JobManager {
       totalEmails: emails.length,
       delay,
       formData,
+      platform, // <--- Store it
       countdown: 0,
     };
     this.jobs.set(accountId, newJob);
@@ -132,6 +134,7 @@ class JobManager {
         results: job.results,
         error: job.error,
         countdown: job.countdown,
+        platform: job.platform // <--- Useful for UI to know
       };
     });
     return statusReport;
@@ -147,7 +150,6 @@ class JobManager {
       this.countdownIntervals.delete(accountId);
     }
   }
-
 
   private scheduleNext(accountId: string) {
     const job = this.jobs.get(accountId);
@@ -182,8 +184,13 @@ class JobManager {
     if (!job || job.status !== 'processing') return;
 
     const email = job.emails[job.currentIndex];
-    const { formData } = job;
+    const { formData, platform } = job;
     
+    // --- 1. DETERMINE BASE URL ---
+    const baseUrl = platform === 'bigin' 
+      ? 'https://www.zohoapis.com/bigin/v2' 
+      : 'https://www.zohoapis.com/crm/v2';
+
     let contactStatus: 'Success' | 'Failed' = 'Failed';
     let emailStatus: 'Success' | 'Failed' | 'Skipped' = 'Skipped';
     let contactResponsePayload: any = {};
@@ -207,7 +214,9 @@ class JobManager {
         };
 
         const contactData = { data: [contactPayload] };
-        const contactResponse = await axios.post('https://www.zohoapis.com/crm/v2/Contacts', contactData, {
+        
+        // Use dynamic URL
+        const contactResponse = await axios.post(`${baseUrl}/Contacts`, contactData, {
           headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
         });
         contactResponsePayload = contactResponse.data;
@@ -228,7 +237,9 @@ class JobManager {
       if (contactId && formData.sendEmail) {
         try {
             const emailData = { data: [{ from: { user_name: fromAddress.user_name, email: fromAddress.email }, to: [{ user_name: formData.lastName, email }], subject: formData.subject, content: formData.content, mail_format: "html" }] };
-            const emailResponse = await axios.post(`https://www.zohoapis.com/crm/v2/Contacts/${contactId}/actions/send_mail`, emailData, {
+            
+            // Use dynamic URL
+            const emailResponse = await axios.post(`${baseUrl}/Contacts/${contactId}/actions/send_mail`, emailData, {
               headers: {
                 'Authorization': `Zoho-oauthtoken ${accessToken}`,
                 'Content-Type': 'application/json'
@@ -259,7 +270,6 @@ class JobManager {
       contactResponsePayload = { message: criticalError.message };
       emailResponsePayload = { message: criticalError.message };
     } finally {
-      // Determine initial status. If check is disabled, set to Skipped immediately so UI doesn't wait.
       const initialLiveStatus = formData.checkStatus ? 'Pending' : 'Skipped';
       
       const resultItem: any = { 
@@ -282,11 +292,11 @@ class JobManager {
               if (!account) return;
               const token = await getAccessToken(account);
 
-              const response = await axios.get(`https://www.zohoapis.com/crm/v2/Contacts/${idToMonitor}/Emails`, {
+              // Use dynamic URL
+              const response = await axios.get(`${baseUrl}/Contacts/${idToMonitor}/Emails`, {
                 headers: { 'Authorization': `Zoho-oauthtoken ${token}` }
               });
               
-              // SAVE THE RESPONSE DATA
               itemToUpdate.response.live = response.data;
 
               const emails = response.data.email_related_list;
@@ -294,8 +304,6 @@ class JobManager {
                 const latestEmail = emails[0];
                 if (latestEmail.status && latestEmail.status.length > 0) {
                     const statusType = latestEmail.status[0].type;
-                    
-                    // Normalize status types
                     if (statusType === 'sent') {
                         itemToUpdate.liveStatus = "Sent";
                     } else if (statusType === 'bounced') {
