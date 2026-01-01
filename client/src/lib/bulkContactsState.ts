@@ -1,86 +1,150 @@
-const initialFormData = {
+import { create } from 'zustand';
+
+export const initialFormData = {
   fromEmail: "",
   lastName: "",
   emails: "",
   subject: "",
   content: "",
-  delay: 5,
+  delay: 1,
   sendEmail: true,
-  checkStatus: false, // New option for Live Status Check
+  checkStatus: false,
+  checkDelay: 10,
   customFields: {} as Record<string, any>,
 };
 
-type FormData = typeof initialFormData;
-
-class BulkContactsState {
-  private static instance: BulkContactsState;
-  private subscribers: Array<(state: Record<string, FormData>) => void> = [];
-  private state: Record<string, FormData> = {};
-
-  private constructor() {}
-
-  public static getInstance(): BulkContactsState {
-    if (!BulkContactsState.instance) {
-      BulkContactsState.instance = new BulkContactsState();
-    }
-    return BulkContactsState.instance;
-  }
-
-  public subscribe(callback: (state: Record<string, FormData>) => void) {
-    this.subscribers.push(callback);
-    callback(this.state);
-  }
-
-  public unsubscribe(callback: (state: Record<string, FormData>) => void) {
-    this.subscribers = this.subscribers.filter(cb => cb !== callback);
-  }
-
-  private notify() {
-    this.subscribers.forEach(cb => cb({ ...this.state }));
-  }
-
-  public getState() {
-    return this.state;
-  }
-  
-  public updateFormData(accountId: string, field: keyof FormData, value: any) {
-    if (!this.state[accountId]) {
-      this.state[accountId] = { ...initialFormData };
-    }
-    this.state[accountId] = {
-      ...this.state[accountId],
-      [field]: value
-    };
-    this.notify();
-  }
-
-  public updateCustomField(accountId: string, fieldName: string, value: any) {
-    if (!this.state[accountId]) {
-      this.state[accountId] = { ...initialFormData };
-    }
-    
-    const currentCustomFields = this.state[accountId].customFields || {};
-    
-    this.state[accountId] = {
-      ...this.state[accountId],
-      customFields: {
-        ...currentCustomFields,
-        [fieldName]: value
-      }
-    };
-    this.notify();
-  }
-  
-  public setFromEmail(accountId: string, email: string) {
-      if (!this.state[accountId]) {
-        this.state[accountId] = { ...initialFormData };
-      }
-      if (!this.state[accountId].fromEmail) {
-        this.state[accountId].fromEmail = email;
-        this.notify();
-      }
-  }
+// Advanced Timer Structure
+interface TimerData {
+  startTime: number | null;
+  endTime: number | null;
+  totalPausedTime: number;
+  lastPauseTime: number | null; // If set, it means currently paused
 }
 
-export { initialFormData };
-export default BulkContactsState.getInstance();
+interface BulkContactsState {
+  forms: Record<string, typeof initialFormData>;
+  timers: Record<string, TimerData>; // Store advanced timer data per job key
+  
+  updateFormData: (accountId: string, field: keyof typeof initialFormData, value: any) => void;
+  setFromEmail: (accountId: string, email: string) => void;
+  updateCustomField: (accountId: string, fieldName: string, value: any) => void;
+  
+  // Timer Actions
+  startTimer: (key: string) => void;
+  pauseTimer: (key: string) => void;
+  resumeTimer: (key: string) => void;
+  stopTimer: (key: string) => void;
+  resetTimer: (key: string) => void;
+}
+
+const useBulkContactsStore = create<BulkContactsState>((set) => ({
+  forms: {},
+  timers: {},
+
+  updateFormData: (accountId, field, value) =>
+    set((state) => ({
+      forms: {
+        ...state.forms,
+        [accountId]: {
+          ...(state.forms[accountId] || initialFormData),
+          [field]: value,
+        },
+      },
+    })),
+
+  setFromEmail: (accountId, email) =>
+    set((state) => ({
+      forms: {
+        ...state.forms,
+        [accountId]: {
+          ...(state.forms[accountId] || initialFormData),
+          fromEmail: email,
+        },
+      },
+    })),
+
+  updateCustomField: (accountId, fieldName, value) =>
+    set((state) => {
+      const currentForm = state.forms[accountId] || initialFormData;
+      const currentCustomFields = currentForm.customFields || {};
+      const newCustomFields = { ...currentCustomFields };
+      if (value === undefined) delete newCustomFields[fieldName];
+      else newCustomFields[fieldName] = value;
+
+      return {
+        forms: { ...state.forms, [accountId]: { ...currentForm, customFields: newCustomFields } }
+      };
+    }),
+
+  // --- SMART TIMER LOGIC ---
+
+  startTimer: (key) =>
+    set((state) => ({
+      timers: {
+        ...state.timers,
+        [key]: { startTime: Date.now(), endTime: null, totalPausedTime: 0, lastPauseTime: null }
+      }
+    })),
+
+  pauseTimer: (key) =>
+    set((state) => {
+      const timer = state.timers[key];
+      if (!timer || timer.lastPauseTime) return state; // Already paused or not started
+      return {
+        timers: {
+          ...state.timers,
+          [key]: { ...timer, lastPauseTime: Date.now() } // Mark when we paused
+        }
+      };
+    }),
+
+  resumeTimer: (key) =>
+    set((state) => {
+      const timer = state.timers[key];
+      if (!timer || !timer.lastPauseTime) return state; // Not paused
+      const pauseDuration = Date.now() - timer.lastPauseTime;
+      return {
+        timers: {
+          ...state.timers,
+          [key]: { 
+            ...timer, 
+            lastPauseTime: null, 
+            totalPausedTime: timer.totalPausedTime + pauseDuration // Add to total skipped time
+          }
+        }
+      };
+    }),
+
+  stopTimer: (key) =>
+    set((state) => {
+      const timer = state.timers[key];
+      if (!timer) return state;
+      
+      // If stopped while paused, calculate that final segment
+      let extraPaused = 0;
+      if (timer.lastPauseTime) {
+          extraPaused = Date.now() - timer.lastPauseTime;
+      }
+
+      return {
+        timers: {
+          ...state.timers,
+          [key]: { 
+            ...timer, 
+            endTime: Date.now(), 
+            lastPauseTime: null, // Clear pause status
+            totalPausedTime: timer.totalPausedTime + extraPaused 
+          }
+        }
+      };
+    }),
+
+  resetTimer: (key) =>
+    set((state) => {
+      const newTimers = { ...state.timers };
+      delete newTimers[key];
+      return { timers: newTimers };
+    }),
+}));
+
+export default useBulkContactsStore;

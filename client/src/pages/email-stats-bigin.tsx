@@ -10,53 +10,52 @@ import { useToast } from "@/hooks/use-toast";
 import StatCard from "@/components/ui/stat-card";
 import { Progress } from "@/components/ui/progress";
 
-export default function EmailStats() {
+export default function EmailStatsBigin() {
   const { data: accounts = [] } = useAccounts();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   
-  // --- FILTER CRM ACCOUNTS ---
-  const validAccounts = useMemo(() => accounts.filter((acc: any) => acc.supports_crm !== false), [accounts]);
+  // --- FILTER: BIGIN ACCOUNTS ONLY ---
+  const validAccounts = useMemo(() => accounts.filter((acc: any) => acc.supports_bigin === true), [accounts]);
 
-  // Initialize from sessionStorage
   const [selectedAccountId, setSelectedAccountId] = useState<string>(() => {
-    return sessionStorage.getItem('emailStats_selectedAccount') || "";
+    return sessionStorage.getItem('emailStatsBigin_selectedAccount') || "";
   });
 
-  const [selectedUserId, setSelectedUserId] = useState<string>("all"); // New User State
+  const [selectedUserId, setSelectedUserId] = useState<string>("all");
   const [filterText, setFilterText] = useState<string>("");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [progress, setProgress] = useState(0);
 
+  // Validate Selection
   useEffect(() => {
     if (validAccounts.length > 0) {
-        // Validation: If current selection is invalid, switch to first valid CRM account
-        const isValid = validAccounts.find((a: any) => a.id.toString() === selectedAccountId);
-        if (!selectedAccountId || !isValid) {
-            const firstId = validAccounts[0].id.toString();
-            setSelectedAccountId(firstId);
-            sessionStorage.setItem('emailStats_selectedAccount', firstId);
-        }
+      const isValid = validAccounts.find((a: any) => a.id.toString() === selectedAccountId);
+      if (!selectedAccountId || !isValid) {
+        const firstId = validAccounts[0].id.toString();
+        setSelectedAccountId(firstId);
+        sessionStorage.setItem('emailStatsBigin_selectedAccount', firstId);
+      }
     }
   }, [validAccounts, selectedAccountId]);
 
-  // Fetch Stats
+  // Fetch Stats (Bigin Endpoint)
   const { data: contactStats = [], isLoading, refetch } = useQuery({
-    queryKey: ['/api/zoho/all-contact-stats', selectedAccountId],
+    queryKey: ['/api/bigin/all-contact-stats', selectedAccountId],
     enabled: !!selectedAccountId,
     staleTime: Infinity,
   });
 
-  // Fetch Users for Dropdown
+  // Fetch Users (Bigin Endpoint)
   const { data: users = [] } = useQuery({
-    queryKey: ['/api/zoho/users', selectedAccountId],
+    queryKey: ['/api/bigin/users', selectedAccountId],
     enabled: !!selectedAccountId,
   });
 
-  // Persistent Progress Logic
+  // Progress Bar Logic
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    const storageKey = `emailStats_startTime_${selectedAccountId}`;
+    const storageKey = `emailStatsBigin_startTime_${selectedAccountId}`;
 
     if (isLoading) {
       let startTime = parseInt(sessionStorage.getItem(storageKey) || '0');
@@ -68,13 +67,9 @@ export default function EmailStats() {
       const updateProgress = () => {
         const elapsed = Date.now() - startTime;
         let p = 0;
-        if (elapsed < 5000) {
-            p = (elapsed / 5000) * 30; 
-        } else if (elapsed < 15000) {
-            p = 30 + ((elapsed - 5000) / 10000) * 30; 
-        } else {
-            p = 60 + ((elapsed - 15000) / 60000) * 30; 
-        }
+        if (elapsed < 3000) p = (elapsed / 3000) * 30; 
+        else if (elapsed < 10000) p = 30 + ((elapsed - 3000) / 7000) * 30; 
+        else p = 60 + ((elapsed - 10000) / 30000) * 30; 
         setProgress(Math.min(p, 90));
       };
 
@@ -83,30 +78,25 @@ export default function EmailStats() {
 
     } else {
       setProgress(100);
-      if (selectedAccountId) {
-        sessionStorage.removeItem(storageKey);
-      }
+      if (selectedAccountId) sessionStorage.removeItem(storageKey);
     }
     return () => clearInterval(interval);
   }, [isLoading, selectedAccountId]);
 
   const handleAccountChange = (accountId: string) => {
     setSelectedAccountId(accountId);
-    setSelectedUserId("all"); // Reset user filter on account change
-    sessionStorage.setItem('emailStats_selectedAccount', accountId);
-    sessionStorage.removeItem(`emailStats_startTime_${accountId}`);
+    setSelectedUserId("all");
+    sessionStorage.setItem('emailStatsBigin_selectedAccount', accountId);
+    sessionStorage.removeItem(`emailStatsBigin_startTime_${accountId}`);
     setProgress(0);
   };
 
-  // Logic to process contacts and count stats
+  // Logic to process contacts and count stats (Same logic, new data source)
   const processedContacts = React.useMemo(() => {
-    // 1. Filter by Selected User FIRST (before calculating counts)
     const rawContacts = Array.isArray(contactStats) ? contactStats : [];
     
-    // 2. Calculate Email Frequencies to identify duplicates
     const emailCounts = new Map<string, number>();
     rawContacts.forEach((c: any) => {
-        // Only count emails for duplicates if they belong to the selected user (or all)
         if (!selectedUserId || selectedUserId === "all" || c.Owner?.id === selectedUserId) {
             if (c.Email && c.Email !== 'N/A') {
                 const email = c.Email.trim().toLowerCase();
@@ -118,48 +108,42 @@ export default function EmailStats() {
     let totalSent = 0, totalOpened = 0, totalClicked = 0, totalBounced = 0, totalDuplicates = 0, totalDelivered = 0, totalUnsent = 0;
     
     const contacts = rawContacts.map((contact: any) => {
-      // Skip processing if not the selected user
-      if (selectedUserId && selectedUserId !== "all" && contact.Owner?.id !== selectedUserId) {
-          return null; 
-      }
+      if (selectedUserId && selectedUserId !== "all" && contact.Owner?.id !== selectedUserId) return null;
 
       let hasSent = false, hasOpened = false, hasClicked = false, hasBounced = false;
       
-      // Check Email Statuses
       if (contact.emails && contact.emails.length > 0) {
         hasSent = true;
         contact.emails.forEach((email: any) => {
-          if (email.status) {
-            let emailHasClicked = false, emailHasOpened = false;
-            email.status.forEach((status: any) => {
-              if (status.type === 'clicked') emailHasClicked = true;
-              if (status.type === 'opened') emailHasOpened = true;
-              if (status.type === 'bounced') hasBounced = true;
-            });
-            if (emailHasClicked) hasClicked = true;
-            else if (emailHasOpened) hasOpened = true;
-          }
+          // Bigin sometimes returns status as array, sometimes string
+          let statusList = [];
+          if (Array.isArray(email.status)) statusList = email.status;
+          else if (email.status) statusList = [{ type: email.status }]; // Normalize to array
+
+          let emailHasClicked = false, emailHasOpened = false;
+          
+          statusList.forEach((status: any) => {
+            const type = (status.type || status).toLowerCase();
+            if (type === 'clicked') emailHasClicked = true;
+            if (type === 'opened') emailHasOpened = true;
+            if (type === 'bounced') hasBounced = true;
+          });
+
+          if (emailHasClicked) hasClicked = true;
+          else if (emailHasOpened) hasOpened = true;
         });
       }
 
-      // Check Duplicate Status
       let isDuplicate = false;
       if (contact.Email && contact.Email !== 'N/A') {
           const email = contact.Email.trim().toLowerCase();
-          if ((emailCounts.get(email) || 0) > 1) {
-              isDuplicate = true;
-          }
+          if ((emailCounts.get(email) || 0) > 1) isDuplicate = true;
       }
 
-      // Calculate Delivered: Sent AND NOT Bounced
       const isDelivered = hasSent && !hasBounced;
 
-      // Logic: Calculate Unsent
-      if (hasSent) {
-          totalSent++;
-      } else {
-          totalUnsent++;
-      }
+      if (hasSent) totalSent++;
+      else totalUnsent++;
 
       if (hasOpened) totalOpened++;
       if (hasClicked) totalClicked++;
@@ -168,10 +152,10 @@ export default function EmailStats() {
       if (isDelivered) totalDelivered++;
       
       return { ...contact, hasSent, hasOpened, hasClicked, hasBounced, isDuplicate, isDelivered, hasUnsent: !hasSent };
-    }).filter(Boolean); // Remove nulls
+    }).filter(Boolean);
 
     return { contacts, totalSent, totalOpened, totalClicked, totalBounced, totalDuplicates, totalDelivered, totalUnsent };
-  }, [contactStats, selectedUserId]); // Re-run when user selection changes
+  }, [contactStats, selectedUserId]);
 
   const filteredContacts = React.useMemo(() => {
     return processedContacts.contacts.filter((contact: any) => {
@@ -210,19 +194,18 @@ export default function EmailStats() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `email-list.txt`;
+    a.download = `bigin-email-list.txt`;
     a.click();
     URL.revokeObjectURL(url);
     toast({ title: "Export successful", description: `Exported ${emails.split('\n').length} emails.` });
   };
 
   const handleRefresh = () => {
-    sessionStorage.removeItem(`emailStats_startTime_${selectedAccountId}`);
+    sessionStorage.removeItem(`emailStatsBigin_startTime_${selectedAccountId}`);
     setProgress(0);
     refetch();
   };
 
-  // Helper to make cards clickable
   const StatCardWrapper = ({ status, children }: { status: string, children: React.ReactNode }) => (
     <div 
       className={`cursor-pointer transition-transform hover:scale-105 ${filterStatus === status ? 'ring-2 ring-primary rounded-xl' : ''}`}
@@ -236,12 +219,12 @@ export default function EmailStats() {
     <div className="space-y-8">
       <div className="form-card">
         <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-semibold">Email Statistics</h3>
+          <h3 className="text-lg font-semibold">Bigin Email Statistics</h3>
           <div className="flex items-center space-x-4">
             
-            {/* Account Selector (FILTERED) */}
+            {/* Account Selector */}
             <div className="flex flex-col space-y-1">
-                <Label htmlFor="stats-account-select" className="text-xs">Account</Label>
+                <Label className="text-xs">Account</Label>
                 <Select value={selectedAccountId} onValueChange={handleAccountChange}>
                 <SelectTrigger className="w-48"><SelectValue placeholder="Choose account" /></SelectTrigger>
                 <SelectContent>
@@ -256,14 +239,14 @@ export default function EmailStats() {
 
             {/* User Selector */}
             <div className="flex flex-col space-y-1">
-                <Label htmlFor="stats-user-select" className="text-xs">Filter by User</Label>
+                <Label className="text-xs">Filter by User</Label>
                 <Select value={selectedUserId} onValueChange={setSelectedUserId}>
                 <SelectTrigger className="w-48"><SelectValue placeholder="All Users" /></SelectTrigger>
                 <SelectContent>
                     <SelectItem value="all">All Users</SelectItem>
                     {(users as any[]).map((user: any) => (
                     <SelectItem key={user.id} value={user.id}>
-                        {user.full_name}
+                        {user.full_name || user.last_name}
                     </SelectItem>
                     ))}
                 </SelectContent>
@@ -282,13 +265,13 @@ export default function EmailStats() {
               <div className="flex justify-between text-sm font-medium text-muted-foreground">
                 <span className="flex items-center gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Analyzing account data...
+                  Analyzing Bigin data...
                 </span>
                 <span>{Math.round(progress)}%</span>
               </div>
               <Progress value={progress} className="h-2 w-full transition-all duration-500" />
               <p className="text-xs text-muted-foreground text-center pt-2">
-                This process runs in the background. You can navigate away and come back.
+                Fetching contacts and email history...
               </p>
             </div>
           </div>

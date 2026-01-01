@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useAccounts } from "@/hooks/use-accounts";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -18,16 +18,23 @@ const modules = [
 export default function EmailTemplates() {
   const { data: accounts = [] } = useAccounts();
   const { toast } = useToast();
+  
+  // --- FILTER CRM ACCOUNTS ---
+  const validAccounts = useMemo(() => accounts.filter((acc: any) => acc.supports_crm !== false), [accounts]);
+
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [selectedModule, setSelectedModule] = useState<string>("Contacts");
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   useEffect(() => {
-    if (accounts.length > 0 && !selectedAccountId) {
-      setSelectedAccountId(accounts[0].id.toString());
+    if (validAccounts.length > 0) {
+        const isValid = validAccounts.find((a: any) => a.id.toString() === selectedAccountId);
+        if (!selectedAccountId || !isValid) {
+            setSelectedAccountId(validAccounts[0].id.toString());
+        }
     }
-  }, [accounts, selectedAccountId]);
+  }, [validAccounts, selectedAccountId]);
 
   const { data: templates = [], isLoading, refetch } = useQuery({
     queryKey: ['/api/zoho/email-templates', selectedAccountId, selectedModule],
@@ -74,7 +81,7 @@ export default function EmailTemplates() {
             <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
               <SelectTrigger className="w-48"><SelectValue placeholder="Choose account" /></SelectTrigger>
               <SelectContent>
-                {accounts.map((account) => (
+                {validAccounts.map((account: any) => (
                   <SelectItem key={account.id} value={account.id.toString()}>
                     {account.name}
                   </SelectItem>

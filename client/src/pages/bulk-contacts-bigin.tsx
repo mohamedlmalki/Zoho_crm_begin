@@ -11,7 +11,6 @@ import { useToast } from "@/hooks/use-toast";
 import { useAccounts } from "@/hooks/use-accounts";
 import { apiRequest } from "@/lib/queryClient";
 import bulkContactsState, { initialFormData } from "@/lib/bulkContactsState";
-import { getZohoFields } from "@/lib/api";
 import { Rocket, StopCircle, Mail, Circle, X, Filter, Download, RefreshCw, Eye, Pause, Play, Plus, Save } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -26,7 +25,7 @@ const isResultSuccessful = (result: any) => {
   return true;
 };
 
-export default function BulkContacts() {
+export default function BulkContactsBigin() {
   const { data: accounts = [] } = useAccounts();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -35,8 +34,8 @@ export default function BulkContacts() {
   // Initialize with current state
   const [allFormsData, setAllFormsData] = useState(bulkContactsState.getState());
 
-  // --- FILTER CRM ACCOUNTS ---
-  const validAccounts = useMemo(() => accounts.filter((acc: any) => acc.supports_crm !== false), [accounts]);
+  // --- FILTER BIGIN ACCOUNTS ---
+  const validAccounts = useMemo(() => accounts.filter((acc: any) => acc.supports_bigin === true), [accounts]);
 
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [userFirstName, setUserFirstName] = useState<string>("");
@@ -66,25 +65,24 @@ export default function BulkContacts() {
   
   const currentJob = useMemo(() => {
       if (!selectedAccountId) return null;
-      return jobStatuses[`crm-${selectedAccountId}`] || null;
+      return jobStatuses[`bigin-${selectedAccountId}`] || null;
   }, [jobStatuses, selectedAccountId]);
 
-  const formKey = `crm-${selectedAccountId}`;
+  const formKey = `bigin-${selectedAccountId}`;
   const formData = allFormsData.forms[formKey] || initialFormData;
 
   const { data: fromAddresses = [], isLoading: isLoadingFromAddresses } = useQuery({
-    queryKey: ['/api/zoho/from_addresses', selectedAccountId],
+    queryKey: ['/api/bigin/from_addresses', selectedAccountId],
     enabled: !!selectedAccountId,
   });
 
   const { data: zohoFieldsData, isLoading: isLoadingFields } = useQuery({
-    queryKey: ['/api/zoho/fields', selectedAccountId],
-    queryFn: () => getZohoFields(selectedAccountId),
+    queryKey: ['/api/bigin/fields', selectedAccountId],
     enabled: !!selectedAccountId,
   });
 
   const { data: users = [], refetch: refetchUsers, isLoading: isLoadingUsers } = useQuery({
-    queryKey: ['/api/zoho/users', selectedAccountId],
+    queryKey: ['/api/bigin/users', selectedAccountId],
     enabled: !!selectedAccountId,
   });
 
@@ -126,7 +124,7 @@ export default function BulkContacts() {
 
   useEffect(() => {
     const isAnyJobActive = Object.entries(jobStatuses).some(([key, job]: [string, any]) => {
-        if (!key.startsWith('crm-')) return false; 
+        if (!key.startsWith('bigin-')) return false; 
         if (job.status === 'processing') return true;
         if (job.results && Array.isArray(job.results)) {
             return job.results.some((r: any) => r.liveStatus === 'Pending');
@@ -146,7 +144,9 @@ export default function BulkContacts() {
 
   // --- FIXED TIMER LOGIC ---
   const elapsedTime = useMemo(() => {
-    const key = `crm-${selectedAccountId}`;
+    const key = `bigin-${selectedAccountId}`;
+    
+    // Correctly access 'timers' (not startTimes)
     const timer = allFormsData.timers?.[key];
     
     if (!timer || !timer.startTime) return "00:00";
@@ -188,7 +188,7 @@ export default function BulkContacts() {
 
   const updateUserMutation = useMutation({
     mutationFn: async ({ accountId, userId, firstName }: { accountId: string, userId: string, firstName: string }) => {
-      const response = await apiRequest('PUT', `/api/zoho/users/${accountId}/${userId}`, { first_name: firstName });
+      const response = await apiRequest('PUT', `/api/bigin/users/${accountId}/${userId}`, { first_name: firstName });
       return response.json();
     },
     onSuccess: () => {
@@ -228,7 +228,7 @@ export default function BulkContacts() {
       return;
     }
     const { emails: _emails, ...restOfFormData } = formData;
-    const key = `crm-${selectedAccountId}`;
+    const key = `bigin-${selectedAccountId}`;
     
     // START TIMER
     bulkContactsState.getState().startTimer(key);
@@ -243,18 +243,18 @@ export default function BulkContacts() {
           ...addr,
           user_name: fromUserName || addr.user_name
       })),
-      platform: 'crm' 
+      platform: 'bigin'
     });
     
     await queryClient.invalidateQueries({ queryKey: ['/api/jobs/status'] });
-    toast({ title: "Job Started", description: `Bulk process for account ${selectedAccountId} has begun.` });
+    toast({ title: "Job Started", description: `Bigin bulk process for account ${selectedAccountId} has begun.` });
   };
   
   const handleEndJob = async () => {
-    await apiRequest('POST', `/api/jobs/stop/${selectedAccountId}`, { platform: 'crm' });
+    await apiRequest('POST', `/api/jobs/stop/${selectedAccountId}`, { platform: 'bigin' });
     
     // STOP TIMER
-    const key = `crm-${selectedAccountId}`;
+    const key = `bigin-${selectedAccountId}`;
     bulkContactsState.getState().stopTimer(key);
 
     await queryClient.invalidateQueries({ queryKey: ['/api/jobs/status'] });
@@ -262,10 +262,10 @@ export default function BulkContacts() {
   };
 
   const handlePauseJob = async () => {
-    await apiRequest('POST', `/api/jobs/pause/${selectedAccountId}`, { platform: 'crm' });
+    await apiRequest('POST', `/api/jobs/pause/${selectedAccountId}`, { platform: 'bigin' });
     
     // PAUSE TIMER
-    const key = `crm-${selectedAccountId}`;
+    const key = `bigin-${selectedAccountId}`;
     bulkContactsState.getState().pauseTimer(key);
 
     await queryClient.invalidateQueries({ queryKey: ['/api/jobs/status'] });
@@ -273,10 +273,10 @@ export default function BulkContacts() {
   };
 
   const handleResumeJob = async () => {
-    await apiRequest('POST', `/api/jobs/resume/${selectedAccountId}`, { platform: 'crm' });
+    await apiRequest('POST', `/api/jobs/resume/${selectedAccountId}`, { platform: 'bigin' });
     
     // RESUME TIMER
-    const key = `crm-${selectedAccountId}`;
+    const key = `bigin-${selectedAccountId}`;
     bulkContactsState.getState().resumeTimer(key);
 
     await queryClient.invalidateQueries({ queryKey: ['/api/jobs/status'] });
@@ -321,7 +321,7 @@ export default function BulkContacts() {
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.setAttribute("href", url);
-    link.setAttribute("download", `exported_emails_${new Date().toISOString()}.txt`);
+    link.setAttribute("download", `bigin_exported_emails_${new Date().toISOString()}.txt`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -333,16 +333,15 @@ export default function BulkContacts() {
 
   return (
     <div className="space-y-8">
-      {/* GRID LAYOUT */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         
         {/* LEFT COLUMN: SETTINGS */}
         <div className="form-card h-full">
-            <h3 className="text-lg font-semibold text-foreground mb-6">Settings & User Manager</h3>
+            <h3 className="text-lg font-semibold text-foreground mb-6">Bigin Settings & User Manager</h3>
             <form onSubmit={handleUpdateUser} className="mb-4 pb-4">
                 <div className="flex flex-col gap-4">
                     <div>
-                        <Label className="mb-2 block">Select Account</Label>
+                        <Label className="mb-2 block">Select Bigin Account</Label>
                         <Select value={selectedAccountId} onValueChange={handleAccountChange}>
                             <SelectTrigger><SelectValue placeholder="Choose account" /></SelectTrigger>
                             <SelectContent>
@@ -375,12 +374,12 @@ export default function BulkContacts() {
             </form>
         </div>
 
-        {/* RIGHT COLUMN: ACCOUNT STATUSES (CRM Only) */}
+        {/* RIGHT COLUMN: ACCOUNT STATUSES (BIGIN Only) */}
         <div className="form-card h-full">
             <h3 className="text-lg font-semibold text-foreground mb-4">Account Statuses</h3>
             <div className="space-y-2 max-h-60 overflow-y-auto pr-2 mb-4">
                 {validAccounts.map((account: any) => {
-                    const key = `crm-${account.id}`;
+                    const key = `bigin-${account.id}`;
                     const status = jobStatuses[key] || {};
                     const statusText = status.status || "idle";
                     const statusColor = status.status === 'processing' ? "text-green-500" : status.status === 'paused' ? "text-yellow-500" : "text-muted-foreground";
@@ -435,7 +434,7 @@ export default function BulkContacts() {
       
       {/* BULK FORM (Standard) */}
       <div className="form-card">
-        <h3 className="text-lg font-semibold text-foreground mb-4">Bulk Contact & Email</h3>
+        <h3 className="text-lg font-semibold text-foreground mb-4">Bulk Contact & Email (Bigin)</h3>
         <div className="mb-6 p-4 border rounded-lg bg-muted/20">
             <h4 className="text-sm font-medium mb-3">Add Custom Fields</h4>
             <div className="flex items-center space-x-2 mb-3">

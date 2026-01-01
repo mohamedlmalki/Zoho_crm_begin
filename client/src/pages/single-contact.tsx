@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,10 @@ const initialResultState = { status: null, data: "" };
 export default function SingleContact() {
   const { data: accounts = [] } = useAccounts();
   const { toast } = useToast();
+  
+  // --- FILTER CRM ACCOUNTS ---
+  const validAccounts = useMemo(() => accounts.filter((acc: any) => acc.supports_crm !== false), [accounts]);
+
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [userFirstName, setUserFirstName] = useState<string>("");
@@ -41,7 +45,7 @@ export default function SingleContact() {
   const [availableFields, setAvailableFields] = useState<any[]>([]);
   const [selectedFieldToAdd, setSelectedFieldToAdd] = useState<string>("");
   const [visibleCustomFields, setVisibleCustomFields] = useState<string[]>([]);
-  const [showCustomOnly, setShowCustomOnly] = useState(true); // Default checked
+  const [showCustomOnly, setShowCustomOnly] = useState(true);
 
   const { data: users = [], refetch: refetchUsers, isLoading: isLoadingUsers } = useQuery({
     queryKey: ['/api/zoho/users', selectedAccountId],
@@ -67,7 +71,6 @@ export default function SingleContact() {
       const filtered = zohoFieldsData.fields.filter((f: any) => {
         if (ignoredFields.includes(f.api_name)) return false;
         if (!f.view_type?.create) return false;
-        // Apply filter
         if (showCustomOnly && !f.custom_field) return false;
         return true;
       });
@@ -76,11 +79,15 @@ export default function SingleContact() {
     }
   }, [zohoFieldsData, showCustomOnly]);
 
+  // --- UPDATED SELECTION LOGIC ---
   useEffect(() => {
-    if (accounts.length > 0 && !selectedAccountId) {
-      setSelectedAccountId(accounts[0].id.toString());
+    if (validAccounts.length > 0) {
+        const isValid = validAccounts.find((a: any) => a.id.toString() === selectedAccountId);
+        if (!selectedAccountId || !isValid) {
+            setSelectedAccountId(validAccounts[0].id.toString());
+        }
     }
-  }, [accounts, selectedAccountId]);
+  }, [validAccounts, selectedAccountId]);
   
   useEffect(() => {
     if (fromAddresses.length > 0) {
@@ -241,7 +248,7 @@ export default function SingleContact() {
               <Select value={selectedAccountId} onValueChange={handleAccountChange}>
                 <SelectTrigger><SelectValue placeholder="Choose account" /></SelectTrigger>
                 <SelectContent>
-                  {accounts.map((account) => (<SelectItem key={account.id} value={account.id.toString()}>{account.name}</SelectItem>))}
+                  {validAccounts.map((account: any) => (<SelectItem key={account.id} value={account.id.toString()}>{account.name}</SelectItem>))}
                 </SelectContent>
               </Select>
             </div>
@@ -276,19 +283,10 @@ export default function SingleContact() {
           {/* Dynamic Field Selector */}
           <div className="mb-6 p-4 border rounded-lg bg-muted/20">
             <h4 className="text-sm font-medium mb-3">Add Custom Fields</h4>
-            
-            {/* NEW: Checkbox to toggle custom fields */}
             <div className="flex items-center space-x-2 mb-3">
-              <Checkbox 
-                id="show-custom-only" 
-                checked={showCustomOnly} 
-                onCheckedChange={(checked) => setShowCustomOnly(checked === true)} 
-              />
-              <Label htmlFor="show-custom-only" className="text-xs text-muted-foreground">
-                Show only custom fields
-              </Label>
+              <Checkbox id="show-custom-only" checked={showCustomOnly} onCheckedChange={(checked) => setShowCustomOnly(checked === true)} />
+              <Label htmlFor="show-custom-only" className="text-xs text-muted-foreground">Show only custom fields</Label>
             </div>
-
             <div className="flex gap-2">
                 <Select value={selectedFieldToAdd} onValueChange={setSelectedFieldToAdd} disabled={isLoadingFields}>
                     <SelectTrigger className="flex-1">
@@ -330,8 +328,6 @@ export default function SingleContact() {
               <Input type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} required />
             </div>
 
-            {/* Custom Fields Rendering */}
-            {/* FIX: Ensure we are using the FULL LIST from zohoFieldsData to find the definition */}
             {visibleCustomFields.map(apiName => {
                 const fieldDef = zohoFieldsData?.fields?.find((f: any) => f.api_name === apiName);
                 if (!fieldDef) return null;
@@ -341,27 +337,14 @@ export default function SingleContact() {
                     <div key={apiName} className="relative p-3 border rounded-md bg-background">
                         <div className="flex justify-between items-center mb-1.5">
                             <Label>{fieldDef.display_label}</Label>
-                            <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                className="h-6 w-6 p-0" 
-                                onClick={() => handleRemoveCustomField(apiName)}
-                                type="button"
-                            >
+                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleRemoveCustomField(apiName)} type="button">
                                 <X className="w-3 h-3 text-muted-foreground hover:text-destructive" />
                             </Button>
                         </div>
-                        
                         {fieldDef.data_type === 'picklist' ? (
                             <Select value={currentValue} onValueChange={(val) => handleCustomFieldChange(apiName, val)}>
                                 <SelectTrigger><SelectValue placeholder={`Select ${fieldDef.display_label}`} /></SelectTrigger>
-                                <SelectContent>
-                                    {fieldDef.pick_list_values?.map((opt: any) => (
-                                        <SelectItem key={opt.display_value} value={opt.actual_value}>
-                                            {opt.display_value}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
+                                <SelectContent>{fieldDef.pick_list_values?.map((opt: any) => (<SelectItem key={opt.display_value} value={opt.actual_value}>{opt.display_value}</SelectItem>))}</SelectContent>
                             </Select>
                         ) : fieldDef.data_type === 'boolean' ? (
                             <div className="flex items-center space-x-2">
@@ -369,11 +352,7 @@ export default function SingleContact() {
                                 <span className="text-sm text-muted-foreground">Yes</span>
                             </div>
                         ) : (
-                            <Input 
-                                type={fieldDef.data_type === 'integer' || fieldDef.data_type === 'double' ? "number" : "text"}
-                                value={currentValue}
-                                onChange={(e) => handleCustomFieldChange(apiName, e.target.value)}
-                            />
+                            <Input type={fieldDef.data_type === 'integer' || fieldDef.data_type === 'double' ? "number" : "text"} value={currentValue} onChange={(e) => handleCustomFieldChange(apiName, e.target.value)} />
                         )}
                     </div>
                 );

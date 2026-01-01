@@ -10,6 +10,29 @@ const ZOHO_ACCOUNTS_URL = 'https://accounts.zoho.com';
 const accessTokenCache: Record<string, { token: string; expires_at: number }> = {};
 const tokenRefreshLocks: Record<string, Promise<string>> = {};
 
+// --- SCOPES ORGANIZATION ---
+const CRM_SCOPES = [
+  'ZohoCRM.modules.ALL',
+  'ZohoCRM.send_mail.all.CREATE',
+  'ZohoCRM.settings.emails.READ',
+  'ZohoCRM.modules.emails.READ',
+  'ZohoCRM.users.ALL',
+  'ZohoCRM.templates.email.READ',
+  'ZohoCRM.settings.fields.READ',
+  'ZohoCRM.settings.automation_actions.ALL',
+  'ZohoCRM.settings.workflow_rules.ALL'
+].join(',');
+
+const BIGIN_SCOPES = [
+  'ZohoBigin.modules.ALL',
+  'ZohoBigin.settings.READ',
+  'ZohoBigin.users.ALL',
+  'ZohoBigin.settings.emails.READ',
+  'ZohoBigin.send_mail.all.CREATE'
+].join(',');
+
+const COMBINED_SCOPES = `${CRM_SCOPES},${BIGIN_SCOPES}`;
+
 // Helper function to generate a simple HTML page for the OAuth callback
 const generateCallbackHTML = (title: string, content: string) => `
   <!DOCTYPE html>
@@ -46,19 +69,27 @@ async function getAccessToken(account: any): Promise<string> {
 
   const refreshPromise = (async () => {
     try {
+      log(`[Auth Debug] Refreshing token for account ${id}...`, 'auth');
       const response = await axios.post(`${ZOHO_ACCOUNTS_URL}/oauth/v2/token`, null, {
         params: { refresh_token, client_id, client_secret, grant_type: 'refresh_token' }
       });
       const newAccessToken = response.data.access_token;
+      
+      if (!newAccessToken) {
+          throw new Error(response.data.error || 'No access token returned');
+      }
+
       const expiresInMs = response.data.expires_in * 1000;
       accessTokenCache[id] = {
         token: newAccessToken,
         expires_at: Date.now() + expiresInMs - 60000
       };
+      log(`[Auth Debug] Token refreshed successfully for account ${id}`, 'auth');
       return newAccessToken;
     } catch (error: any) {
-      log(`Failed to get access token for account ${id}: ${error.message}`, 'auth-error');
-      throw new Error('Invalid refresh token or other Zoho API error.');
+      const errMsg = error.response?.data?.error || error.message;
+      log(`[Auth Debug] Failed to get access token for account ${id}: ${errMsg}`, 'auth-error');
+      throw new Error(`Token Refresh Failed: ${errMsg}`);
     } finally {
       delete tokenRefreshLocks[id];
     }
@@ -68,13 +99,50 @@ async function getAccessToken(account: any): Promise<string> {
   return await refreshPromise;
 }
 
+// --- HELPER: DETECT CAPABILITIES ---
+async function detectAccountCapabilities(accessToken: string) {
+    let supportsCrm = false;
+    let supportsBigin = false;
+
+    log('[Auth Debug] Starting Capability Detection...', 'auth');
+
+    // 1. Check CRM Support
+    try {
+        log('[Auth Debug] Checking Zoho CRM support (v8/settings/fields)...', 'auth');
+        await axios.get('https://www.zohoapis.com/crm/v8/settings/fields?module=Contacts', {
+            headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+        });
+        supportsCrm = true;
+        log('[Auth Debug] ✅ Zoho CRM is SUPPORTED.', 'auth');
+    } catch (e: any) {
+        const status = e.response?.status;
+        const code = e.response?.data?.code || 'UNKNOWN';
+        log(`[Auth Debug] ❌ Zoho CRM check FAILED. Status: ${status}, Code: ${code}`, 'auth-error');
+    }
+
+    // 2. Check Bigin Support
+    try {
+        log('[Auth Debug] Checking Zoho Bigin support (v1/settings/fields)...', 'auth');
+        await axios.get('https://www.zohoapis.com/bigin/v1/settings/fields?module=Contacts', {
+            headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+        });
+        supportsBigin = true;
+        log('[Auth Debug] ✅ Zoho Bigin is SUPPORTED.', 'auth');
+    } catch (e: any) {
+        const status = e.response?.status;
+        const code = e.response?.data?.code || 'UNKNOWN';
+        log(`[Auth Debug] ❌ Zoho Bigin check FAILED. Status: ${status}, Code: ${code}`, 'auth-error');
+    }
+
+    return { supportsCrm, supportsBigin };
+}
+
 async function fetchAllContacts(accessToken: string) {
-    // Use a Map to automatically handle duplicates by ID
     const contactsMap = new Map();
     let page = 1;
     let moreRecords = true;
 
-    while (moreRecords) {
+    while (moreRecords && page < 100) { 
         try {
             const response = await axios.get('https://www.zohoapis.com/crm/v2/Contacts', {
                 params: { page: page, per_page: 200 },
@@ -82,7 +150,6 @@ async function fetchAllContacts(accessToken: string) {
             });
 
             if (response.data && response.data.data) {
-                // Add each contact to the Map using ID as the key
                 response.data.data.forEach((contact: any) => {
                     contactsMap.set(contact.id, contact);
                 });
@@ -92,38 +159,72 @@ async function fetchAllContacts(accessToken: string) {
             page++;
         } catch (error) {
             console.error("Error fetching page " + page, error);
-            moreRecords = false; // Stop on error
+            moreRecords = false; 
         }
     }
-    
-    // Convert Map values back to an array
     return Array.from(contactsMap.values());
 }
 
 async function fetchAllContactStats(accessToken: string, allContacts: any[]) {
-    const statsPromises = allContacts.map(async (contact) => {
-        try {
-            const statsResponse = await axios.get(`https://www.zohoapis.com/crm/v2/Contacts/${contact.id}/Emails`, {
-                headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
-            });
-            return {
-                contact_id: contact.id,
-                Full_Name: contact.Full_Name,
-                Email: contact.Email,
-                Owner: contact.Owner, // <--- ADD THIS LINE
-                emails: statsResponse.data.email_related_list || []
-            };
-        } catch (error) {
-            return {
-                contact_id: contact.id,
-                Full_Name: contact.Full_Name,
-                Email: contact.Email,
-                Owner: contact.Owner, // <--- ADD THIS LINE HERE TOO
-                emails: []
-            };
+    const BATCH_SIZE = 10;
+    const DELAY_MS = 50;
+    const allResults = [];
+    const totalContacts = allContacts.length;
+    const totalBatches = Math.ceil(totalContacts / BATCH_SIZE);
+
+    log(`[Stats] Starting bulk fetch for ${totalContacts} contacts. (Total Batches: ${totalBatches})`, 'stats-job');
+
+    for (let i = 0; i < totalContacts; i += BATCH_SIZE) {
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        const batch = allContacts.slice(i, i + BATCH_SIZE);
+        
+        log(`[Stats] Processing Batch ${batchNum}/${totalBatches} (${batch.length} contacts)...`, 'stats-job');
+        
+        let batchSuccess = 0;
+        let batchFail = 0;
+
+        const batchPromises = batch.map(async (contact) => {
+            try {
+                const statsResponse = await axios.get(`https://www.zohoapis.com/crm/v2/Contacts/${contact.id}/Emails`, {
+                    headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` },
+                    timeout: 10000 
+                });
+                
+                batchSuccess++;
+                return {
+                    contact_id: contact.id,
+                    Full_Name: contact.Full_Name,
+                    Email: contact.Email,
+                    Owner: contact.Owner,
+                    emails: statsResponse.data.email_related_list || []
+                };
+            } catch (error: any) {
+                batchFail++;
+                const errorMsg = error.code === 'ECONNABORTED' ? 'Timeout (10s)' : error.message;
+                log(`[Stats] [Error] Contact: ${contact.Email} | ID: ${contact.id} | Reason: ${errorMsg}`, 'stats-error');
+                
+                return {
+                    contact_id: contact.id,
+                    Full_Name: contact.Full_Name,
+                    Email: contact.Email,
+                    Owner: contact.Owner,
+                    emails: [] 
+                };
+            }
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+        allResults.push(...batchResults);
+
+        log(`[Stats] Batch ${batchNum} complete. Success: ${batchSuccess}, Failed: ${batchFail}`, 'stats-job');
+
+        if (i + BATCH_SIZE < totalContacts) {
+            await new Promise(resolve => setTimeout(resolve, DELAY_MS));
         }
-    });
-    return Promise.all(statsPromises);
+    }
+    
+    log(`[Stats] Finished fetching stats. Total processed: ${allResults.length}`, 'stats-job');
+    return allResults;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -132,37 +233,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
     next();
   });
 
-  // --- New OAuth Token Generation Routes ---
+  // --- OAuth Routes ---
 
   app.get('/api/zoho/generate-auth-url', (req, res) => {
     const { client_id, client_secret } = req.query;
+    log('[Auth Debug] Generating Auth URL...', 'auth');
 
     if (!client_id || !client_secret) {
       return res.status(400).send('Client ID and Client Secret are required.');
     }
 
     const state = Buffer.from(JSON.stringify({ clientId: client_id, clientSecret: client_secret })).toString('base64');
-    
     const redirectUri = `${req.protocol}://${req.get('host')}/api/zoho/oauth-callback`;
-    
-    // Scopes needed for the app
-    const ZOHO_SCOPE = 'ZohoCRM.modules.ALL,ZohoCRM.send_mail.all.CREATE,ZohoCRM.settings.emails.READ,ZohoCRM.modules.emails.READ,ZohoCRM.users.ALL,ZohoCRM.templates.email.READ,ZohoCRM.settings.fields.READ,ZohoCRM.settings.automation_actions.ALL,ZohoCRM.settings.workflow_rules.ALL';
 
     const authUrl = new URL(`${ZOHO_ACCOUNTS_URL}/oauth/v2/auth`);
-    authUrl.searchParams.append('scope', ZOHO_SCOPE);
+    authUrl.searchParams.append('scope', COMBINED_SCOPES);
     authUrl.searchParams.append('client_id', client_id as string);
     authUrl.searchParams.append('response_type', 'code');
     authUrl.searchParams.append('access_type', 'offline');
     authUrl.searchParams.append('redirect_uri', redirectUri);
     authUrl.searchParams.append('state', state);
-
+    
+    log(`[Auth Debug] Auth URL generated with scopes: ${COMBINED_SCOPES}`, 'auth');
     res.redirect(authUrl.toString());
   });
 
   app.get('/api/zoho/oauth-callback', async (req, res) => {
     const { code, state, error } = req.query;
+    log('[Auth Debug] OAuth Callback received.', 'auth');
 
     if (error) {
+      log(`[Auth Debug] Error from Zoho: ${error}`, 'auth-error');
       const errorHtml = generateCallbackHTML(
         'Error',
         `<h1 class="text-2xl font-bold text-red-600 mb-4">Authorization Failed</h1><p class="text-gray-700">Zoho returned an error: ${error}</p>`
@@ -183,6 +284,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { clientId, clientSecret } = decodedState;
       const redirectUri = `${req.protocol}://${req.get('host')}/api/zoho/oauth-callback`;
 
+      log('[Auth Debug] Exchanging code for token...', 'auth');
       const response = await axios.post(`${ZOHO_ACCOUNTS_URL}/oauth/v2/token`, null, {
         params: {
           grant_type: 'authorization_code',
@@ -194,6 +296,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       const refreshToken = response.data.refresh_token;
+      log('[Auth Debug] Refresh Token generated successfully.', 'auth');
       
       const successHtml = generateCallbackHTML(
         'Token Generated',
@@ -223,7 +326,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       );
       res.send(successHtml);
     } catch (err: any) {
-      log(`OAuth callback error: ${err.message}`, 'auth-error');
+      log(`[Auth Debug] OAuth callback error: ${err.message}`, 'auth-error');
       const errorHtml = generateCallbackHTML(
         'Error',
         `<h1 class="text-2xl font-bold text-red-600 mb-4">Failed to Get Token</h1><p class="text-gray-700">${err.response?.data?.error || err.message}</p>`
@@ -232,63 +335,140 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // --- Metadata Endpoint (Using V8) ---
-  app.get('/api/zoho/fields/:accountId', async (req, res) => {
-    try {
-      const accountId = parseInt(req.params.accountId);
-      const { module } = req.query; 
+  // --- JOB ROUTES ---
 
-      const account = await storage.getAccount(accountId);
-      if (!account) return res.status(404).json({ error: 'Account not found.' });
-
-      const accessToken = await getAccessToken(account);
-      
-      const response = await axios.get('https://www.zohoapis.com/crm/v8/settings/fields', {
-        params: { module: module || 'Contacts' },
-        headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
-      });
-
-      res.json(response.data);
-    } catch (error: any) {
-      log(`Failed to fetch fields for account ${req.params.accountId}: ${error.message}`, 'api-error');
-      res.status(500).json({ 
-        error: 'Failed to fetch fields', 
-        details: error.response ? error.response.data : error.message 
-      });
-    }
-  });
-
-  // --- Job Management Endpoints ---
   app.post('/api/jobs/start/:accountId', (req, res) => {
     const { accountId } = req.params;
-    const { emails, delay, ...formData } = req.body;
-    jobManager.startJob(accountId, emails, delay, formData);
+    const { emails, delay, platform = 'crm', ...formData } = req.body;
+    // Pass platform to create specific key (crm-123 or bigin-123)
+    jobManager.startJob(accountId, emails, delay, formData, platform as 'crm' | 'bigin');
     res.status(202).json({ message: 'Job started' });
-  });
-
-  app.post('/api/jobs/stop/:accountId', (req, res) => {
-    const { accountId } = req.params;
-    jobManager.stopJob(accountId);
-    res.status(200).json({ message: 'Job stopped' });
-  });
-  
-  app.post('/api/jobs/pause/:accountId', (req, res) => {
-    const { accountId } = req.params;
-    jobManager.pauseJob(accountId);
-    res.status(200).json({ message: 'Job paused' });
-  });
-
-  app.post('/api/jobs/resume/:accountId', (req, res) => {
-    const { accountId } = req.params;
-    jobManager.resumeJob(accountId);
-    res.status(200).json({ message: 'Job resumed' });
   });
 
   app.get('/api/jobs/status', (req, res) => {
     res.json(jobManager.getStatus());
   });
 
-  // --- Account Management ---
+  app.post('/api/jobs/pause/:accountId', (req, res) => {
+    const { accountId } = req.params;
+    const { platform = 'crm' } = req.body; 
+    jobManager.pauseJob(accountId, platform);
+    res.json({ message: 'Job paused' });
+  });
+
+  app.post('/api/jobs/resume/:accountId', (req, res) => {
+    const { accountId } = req.params;
+    const { platform = 'crm' } = req.body; 
+    jobManager.resumeJob(accountId, platform);
+    res.json({ message: 'Job resumed' });
+  });
+
+  app.post('/api/jobs/stop/:accountId', (req, res) => {
+    const { accountId } = req.params;
+    const { platform = 'crm' } = req.body; 
+    jobManager.stopJob(accountId, platform);
+    res.json({ message: 'Job stopped' });
+  });
+
+  // --- BIGIN SPECIFIC ENDPOINTS ---
+
+  app.get('/api/bigin/users/:accountId', async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const account = await storage.getAccount(accountId);
+      if (!account) return res.status(404).json({ error: 'Account not found.' });
+
+      const accessToken = await getAccessToken(account);
+      const response = await axios.get('https://www.zohoapis.com/bigin/v2/users?type=AllUsers', {
+        headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+      });
+      
+      const usersList = response.data.users || response.data.data || [];
+      if (!Array.isArray(usersList)) return res.json([]); 
+      res.json(usersList);
+    } catch (error: any) {
+      log(`Failed to fetch Bigin users: ${error.message}`, 'api-error');
+      res.status(200).json([]); 
+    }
+  });
+
+  app.put('/api/bigin/users/:accountId/:userId', async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const userId = req.params.userId;
+      const { first_name } = req.body;
+
+      const account = await storage.getAccount(accountId);
+      if (!account) return res.status(404).json({ error: 'Account not found.' });
+      if (!first_name) return res.status(400).json({ error: 'First name is required.' });
+      
+      const accessToken = await getAccessToken(account);
+
+      const updateData = {
+        users: [{ id: userId, first_name: first_name }]
+      };
+
+      const response = await axios.put(`https://www.zohoapis.com/bigin/v2/users/${userId}`, updateData, {
+        headers: {
+          'Authorization': `Zoho-oauthtoken ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      res.json(response.data);
+    } catch (error: any) {
+      log(`Failed to update Bigin user ${req.params.userId}: ${error.message}`, 'api-error');
+      res.status(500).json({ 
+        error: 'Failed to update user in Bigin',
+        details: error.response ? error.response.data : error.message 
+      });
+    }
+  });
+
+  app.get('/api/bigin/fields/:accountId', async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const account = await storage.getAccount(accountId);
+      if (!account) return res.status(404).json({ error: 'Account not found.' });
+
+      const accessToken = await getAccessToken(account);
+      const response = await axios.get('https://www.zohoapis.com/bigin/v1/settings/fields', {
+        params: { module: 'Contacts' },
+        headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+      });
+      res.json(response.data);
+    } catch (error: any) {
+      log(`Failed to fetch Bigin fields: ${error.message}`, 'api-error');
+      res.status(500).json({ error: 'Failed', details: error.message });
+    }
+  });
+
+  app.get('/api/bigin/from_addresses/:accountId', async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const account = await storage.getAccount(accountId);
+      if (!account) return res.status(404).json({ error: 'Account not found.' });
+
+      const accessToken = await getAccessToken(account);
+      const response = await axios.get('https://www.zohoapis.com/bigin/v2/settings/emails/actions/from_addresses', {
+        headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+      });
+      
+      const rawAddresses = response.data.from_address || response.data.from_addresses || [];
+      
+      const normalizedAddresses = rawAddresses.map((addr: any) => ({
+          ...addr,
+          user_name: addr.user_name || addr.display_value || addr.email
+      }));
+
+      res.json(normalizedAddresses);
+    } catch (error: any) {
+      log(`Failed to fetch Bigin from addresses: ${error.message}`, 'api-error');
+      res.status(500).json({ error: 'Failed', details: error.message });
+    }
+  });
+
+  // --- ACCOUNT ENDPOINTS ---
+
   app.get('/api/accounts', async (req, res) => {
     const accounts = await storage.getAllAccounts();
     res.json(accounts);
@@ -298,11 +478,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const accountId = parseInt(req.params.id);
       const account = await storage.getAccount(accountId);
-      
-      if (!account) {
-        return res.status(404).json({ error: 'Account not found' });
-      }
-
+      if (!account) return res.status(404).json({ error: 'Account not found' });
       const accessToken = await getAccessToken(account);
       res.json({ access_token: accessToken });
     } catch (error: any) {
@@ -311,20 +487,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // POST: Create New Account (Perform Capability Check)
   app.post('/api/accounts', async (req, res) => {
-    const newAccount = req.body;
-    const account = await storage.createAccount(newAccount);
+    const newAccountData = req.body;
+    log(`[Auth Debug] Creating new account: ${newAccountData.name}`, 'auth');
+
+    let caps = { supportsCrm: false, supportsBigin: false };
+
+    try {
+        const tempId = `temp-${randomUUID()}`;
+        const tempAccount = { ...newAccountData, id: tempId };
+        const accessToken = await getAccessToken(tempAccount); 
+        
+        // Use shared logic for detection
+        caps = await detectAccountCapabilities(accessToken);
+
+    } catch (e: any) {
+        log(`[Auth Debug] Critical validation error during add: ${e.message}`, 'auth-error');
+    }
+
+    const accountToSave = { 
+        ...newAccountData, 
+        supports_crm: caps.supportsCrm,
+        supports_bigin: caps.supportsBigin 
+    };
+    
+    const account = await storage.createAccount(accountToSave);
     res.status(201).json(account);
   });
   
+  // PUT: Update Account (RE-RUN Capability Check)
   app.put('/api/accounts/:id', async (req, res) => {
     try {
       const accountId = parseInt(req.params.id);
       const updatedData = req.body;
-      const account = await storage.updateAccount(accountId, updatedData);
-      if (!account) {
-        return res.status(404).json({ error: 'Account not found' });
+      log(`[Auth Debug] Updating account ${accountId}...`, 'auth');
+
+      // We need to re-verify capabilities in case credentials changed
+      // Create a temporary object merging old data with new to check token
+      const existingAccount = await storage.getAccount(accountId);
+      if (!existingAccount) return res.status(404).json({ error: 'Account not found' });
+
+      const mergedForCheck = { ...existingAccount, ...updatedData, id: accountId };
+      
+      let caps = { supportsCrm: false, supportsBigin: false };
+      try {
+          // Clear cache to force new token generation with new creds
+          delete accessTokenCache[accountId];
+          
+          const accessToken = await getAccessToken(mergedForCheck);
+          caps = await detectAccountCapabilities(accessToken);
+      } catch (e: any) {
+          log(`[Auth Debug] Validation error during update: ${e.message}`, 'auth-error');
       }
+
+      // Save with new capabilities
+      const finalDataToSave = {
+          ...updatedData,
+          supports_crm: caps.supportsCrm,
+          supports_bigin: caps.supportsBigin
+      };
+
+      const account = await storage.updateAccount(accountId, finalDataToSave);
       res.json(account);
     } catch (error) {
       res.status(500).json({ error: 'Failed to update account' });
@@ -335,9 +559,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const accountId = parseInt(req.params.id);
       const deleted = await storage.deleteAccount(accountId);
-      if (!deleted) {
-        return res.status(404).json({ error: 'Account not found' });
-      }
+      if (!deleted) return res.status(404).json({ error: 'Account not found.' });
       res.status(204).end();
     } catch (error) {
       res.status(500).json({ error: 'Failed to delete account' });
@@ -346,19 +568,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
   
   app.post('/api/accounts/validate', async (req, res) => {
     const { client_id, client_secret, refresh_token } = req.body;
+    log('[Auth Debug] Validating credentials...', 'auth');
+
     if (!client_id || !client_secret || !refresh_token) {
       return res.status(400).json({ error: 'All credentials are required.' });
     }
-
     try {
       await getAccessToken({ client_id, client_secret, refresh_token, id: `validation-${randomUUID()}` });
+      log('[Auth Debug] Credentials Valid!', 'auth');
       return res.json({ connected: true });
     } catch (error: any) {
+      log(`[Auth Debug] Credential validation failed: ${error.message}`, 'auth-error');
       return res.status(200).json({ connected: false, error: error.message });
     }
   });
   
-  // --- Zoho API Endpoints ---
+  // --- ZOHO CRM ENDPOINTS ---
+
   app.post('/api/zoho/contact-and-email/:accountId', async (req, res) => {
     const accountId = parseInt(req.params.accountId);
     let contactResult: any = { success: false, data: null };
@@ -552,7 +778,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-
   app.delete('/api/zoho/contacts/:accountId', async (req, res) => {
     try {
       const accountId = parseInt(req.params.accountId);
@@ -577,7 +802,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
- // 1. Get All Workflow Rules
   app.get('/api/zoho/workflow-rules/:accountId', async (req, res) => {
     try {
       const accountId = parseInt(req.params.accountId);
@@ -603,7 +827,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // 2. Get Specific Workflow Rule
   app.get('/api/zoho/workflow-rules/:accountId/:ruleId', async (req, res) => {
     try {
       const { accountId, ruleId } = req.params;
@@ -627,7 +850,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // 3. Get Workflow Rule Usage Report
   app.get('/api/zoho/workflow-rules/:accountId/:ruleId/usage', async (req, res) => {
     try {
       const { accountId, ruleId } = req.params;

@@ -8,9 +8,9 @@
   },
   {
     "name": "1",
-    "client_id": "1000.WVN53VONZNA9H6PAQCD844CB27P50I",
-    "client_secret": "f4353d1471da57caa8069fd7120282d45eff002ca5",
-    "refresh_token": "1000.678eceb41a0e6e1a9a8220e91580cfea.3d841ed82ae63c2f0ee7b95164beb5d1",
+    "client_id": "1000.K7J0938ALLZPKYZADYCSIRTDP4P2OF",
+    "client_secret": "8522da7f8c63c51329978e617fbb20277484ac4d5c",
+    "refresh_token": "1000.3bee794db075ec0980b9816e73df7d34.87470de4f17df7da9514e1365f2d95eb",
     "id": 1764598169488
   },
   {
@@ -166,5 +166,14 @@
     "client_secret": "7af9ca092d4986822358aabf1400ab9d72e1bb0e9b",
     "refresh_token": "1000.a8366bf659294a3641b01d651e6b15a6.a44a3a8c0f3eb98f708188f045f73a40",
     "id": 1764735184019
+  },
+  {
+    "name": "begin CRM",
+    "client_id": "1000.FDLTU5ANKJPG6LSGT6D676ARTBNDKK",
+    "client_secret": "b8e57053770574607c7d422befd38eb60dbdb84ef4",
+    "refresh_token": "1000.8cbdecf5b27ff9f9882571f5d1c167a0.781fe85ba16bf0561a40af4b57c788e8",
+    "supports_crm": true,
+    "supports_bigin": true,
+    "id": 1767268047389
   }
 ]
